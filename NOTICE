@@ -1,0 +1,22 @@
+Render Studio — third-party notices
+
+This project is MIT-licensed (see LICENSE). It depends on, or can fetch, the
+following third-party components, which keep their own licences:
+
+- PyMuPDF — AGPL-3.0. Used through the ezdxf drawing back-end to rasterise DXF.
+  The MIT code in this repository merely depends on it; a combined binary or
+  container image that bundles PyMuPDF is subject to the AGPL-3.0.
+- ifcopenshell — LGPL-3.0-or-later. IFC parsing.
+- ezdxf — MIT. DXF parsing.
+- openskp — MIT. Pure-Python SketchUp (.skp) reader.
+- trimesh, pyrender, Pillow, NumPy, onnxruntime, FastAPI, pydantic, argon2-cffi
+  and the other packages in uv.lock — their respective permissive licences.
+- Depth Anything V2 Small (ONNX export) — Apache-2.0. Not bundled; downloaded
+  by scripts/fetch_depth_model.py and checked against a pinned SHA-256.
+- Fonts Barlow and IBM Plex Mono (web/public/fonts) — SIL Open Font License 1.1.
+
+Hosted models: image generation runs on fal.ai endpoints (FLUX-family and
+others, listed in routing.yaml). FLUX.1 [dev]-based endpoints carry
+non-commercial terms when self-hosted; on fal.ai they are used under your own
+fal account terms. You bring your own FAL_KEY and are responsible for
+complying with those terms.

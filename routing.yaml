@@ -1,0 +1,987 @@
+# Model routing table — CONFIG, NOT CODE.
+#
+# This file is the "automatically chooses the best model" feature. It is a
+# lookup table on purpose: predictable, debuggable, testable, and it cannot
+# surprise you with a bill. Model quality and pricing change monthly — edit
+# this file, not the application.
+#
+# Every task offers two engines, so the architect decides per render:
+#
+#   proven  — the pipeline that has been reasoned through, and in the
+#             geometry-critical tasks the one that actually constrains the
+#             building's shape.
+#   latest  — the current generation on fal.ai. Better light, materials and
+#             prompt-following, but on the massing and sketch tasks it treats
+#             your view as a reference rather than tracing it.
+#
+# Prices verified against fal.ai on 2026-08-03. RE-CHECK BEFORE TRUSTING THE
+# COST ESTIMATES — fal.ai changes pricing without notice.
+
+version: 2
+priced_on: "2026-08-03"
+
+# Any model_id the app submits to MUST appear here. The gateway enforces this.
+# A task that resolves to a model outside this list is refused, not submitted.
+allowlist:
+  - fal-ai/flux/schnell
+  - fal-ai/flux/dev
+  - fal-ai/flux-pro/v1.1
+  - fal-ai/flux-pro/kontext
+  - fal-ai/flux-general
+  - fal-ai/flux-general/differential-diffusion
+  - fal-ai/flux-pro/v1/fill
+  - fal-ai/clarity-upscaler
+  - fal-ai/flux-lora
+  - fal-ai/flux-2-pro/edit
+  - fal-ai/nano-banana-pro/edit
+  - fal-ai/seedvr/upscale/image
+  - bytedance/seedream/v5/pro/edit
+
+# Cost model. unit is either "per_megapixel" or "per_image".
+# Estimates are pre-flight only — actual billing comes from fal.ai.
+costs:
+  fal-ai/flux/schnell:      { unit: per_megapixel, usd: 0.003 }
+  fal-ai/flux/dev:          { unit: per_megapixel, usd: 0.025 }
+  fal-ai/flux-pro/v1.1:     { unit: per_megapixel, usd: 0.040 }
+  fal-ai/flux-pro/kontext:  { unit: per_image,     usd: 0.040 }
+  fal-ai/flux-general:      { unit: per_megapixel, usd: 0.075 }
+  # Not a guess — every call against this endpoint (2026-08-07) billed exactly $0.075/MP, the same rate as the base model.
+  fal-ai/flux-general/differential-diffusion: { unit: per_megapixel, usd: 0.075 }
+  fal-ai/flux-pro/v1/fill:  { unit: per_megapixel, usd: 0.050 }
+  fal-ai/clarity-upscaler:  { unit: per_megapixel, usd: 0.030 }
+  fal-ai/flux-lora:         { unit: per_megapixel, usd: 0.035 }
+
+  # fal prices this one in tiers: $0.03 for the first megapixel of output,
+  # then $0.015 per further megapixel of input AND output, each rounded up.
+  # The flat rate below deliberately over-estimates that. A budget gate that
+  # guesses low is worse than useless, and the estimate is advisory anyway.
+  fal-ai/flux-2-pro/edit:   { unit: per_megapixel, usd: 0.060 }
+
+  fal-ai/nano-banana-pro/edit: { unit: per_image,  usd: 0.150 }
+  fal-ai/seedvr/upscale/image: { unit: per_megapixel, usd: 0.001 }
+
+  # fal prices this in tiers: $0.0675/image up to 1536², $0.135 up to 2048²,
+  # plus $0.0045 per reference image beyond the first. The flat rate below
+  # over-estimates the worst case (2K output + several references) on purpose
+  # — a budget gate that guesses low is worse than useless. Priced 2026-08-04.
+  bytedance/seedream/v5/pro/edit: { unit: per_image, usd: 0.180 }
+
+# ---------------------------------------------------------------------------
+# Request contracts.
+#
+# These endpoints do NOT share a request shape. One takes image_url, another
+# image_urls, another puts the source image inside a conditioning entry. One
+# has no num_images at all. Sending the wrong shape returns a 422 listing the
+# missing field, which is how the first three of these were pinned down.
+#
+# So the shape is config, like everything else here. Python reads this; it does
+# not assume.
+#
+#   image        where the source image goes:
+#                  image_url     — top-level, singular
+#                  image_urls    — top-level, a list
+#                  easycontrols  — inside conditioning entries (flux-general)
+#                  none          — endpoint takes no input image
+#   size         image_size | none  (none = endpoint sizes by other means)
+#   num_images   whether the endpoint can return more than one per call
+#   drop         parameters this endpoint rejects, stripped before sending
+#   verified     date the shape was read off the endpoint's own schema page
+#
+# UNVERIFIED entries have not been checked against their schema page yet. They
+# carry the shape the app used before, which may be wrong. Check the schema
+# page before trusting one, exactly as the three verified ones were.
+# ---------------------------------------------------------------------------
+payloads:
+  # Allowlisted but not currently routed to by any task. Shapes here are the
+  # plain text-to-image contract and have not been checked against a live call.
+  fal-ai/flux/schnell:
+    verified: UNVERIFIED
+    image: none
+    size: image_size
+    num_images: true
+  fal-ai/flux/dev:
+    verified: UNVERIFIED
+    image: none
+    size: image_size
+    num_images: true
+  fal-ai/flux-pro/v1.1:
+    verified: UNVERIFIED
+    image: none
+    size: image_size
+    num_images: true
+
+  fal-ai/flux-general:
+    verified: "2026-08-07"
+    image: easycontrols
+    size: image_size
+    num_images: true           # 1-10
+    # One control image, fanned out across every conditioning entry. A single
+    # entry can read its own image instead — that is how a true depth pass
+    # exported from Revit/SketchUp conditions the depth control while canny
+    # keeps reading the colour view (control_assets={"depth": ...}).
+    max_images: 1
+    # control_method_url presets confirmed against the schema:
+    #   canny, depth, hedsketch, inpainting, pose, seg, subject, ghibli
+    # image_control_type: spatial | subject.  scale: 0-2.
+    #
+    # ALL conditioning on this endpoint goes through controlnet_unions, and
+    # easycontrols is not sent at all. Two independent reasons, both measured
+    # 2026-08-27 on test renders:
+    #
+    #  1. They are MUTUALLY EXCLUSIVE. A request carrying easycontrols[canny]
+    #     and controlnet_unions[depth] together fails to load the pipeline:
+    #     "The size of tensor a (1537) must match the size of tensor b (2561)".
+    #     EasyControl appends its own fixed ~512px conditioning tokens to the
+    #     sequence ((512/16)^2 = 1024 of them, hence 2561 = 1537 + 1024), and
+    #     the ControlNet residual is computed for the un-appended length. Each
+    #     transport alone works; the pair never can. At 1280x960 it reads
+    #     5313 vs 6337. This bug broke massing, interior and aerial on the
+    #     proven engine on every single render until 2026-08-27.
+    #  2. EasyControl is much the weaker of the two anyway. At canny 0.75/0.82
+    #     it hallucinated straight through the floorplan and masterplan
+    #     drawings; routed through the union at the SAME scale the masterplan
+    #     came back with plot boundary, north arrow, building
+    #     outlines and labels all in their drawn positions. An earlier
+    #     measurement (2026-08-07) had already measured the same thing on depth, where
+    #     EasyControl's ~512px cond_size is exactly where mullions, reveals and
+    #     joint lines die (published edge-recall 0.870 vs 0.686).
+    #
+    # `path` must be an HF repo id, not a preset name ("depth" alone 422s as
+    # "not a valid model identifier"). `modes` maps OUR conditioning type names
+    # to Union-Pro's control_mode values; Union-Pro supports canny, tile,
+    # depth, blur, pose, gray and low_quality. A type with no entry here is
+    # refused by the gateway rather than dropped or sent via easycontrols —
+    # `seg` is deliberately absent because the union has no equivalent for it.
+    controlnet_union:
+      path: "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro"
+      modes:
+        depth: depth
+        canny: canny
+        # A hand sketch IS linework, so canny of it is the sketch. hedsketch's
+        # soft-edge advantage was an EasyControl preset and does not survive
+        # the move; the union's canny is the closest true equivalent, and the
+        # scale is what does the tolerating (see sketch_to_render).
+        hedsketch: canny
+
+  fal-ai/flux-general/differential-diffusion:
+    # Shape confirmed by real calls (with and without a change map),
+    # 2026-08-07, 0 failures — not from the schema page alone.
+    verified: "2026-08-07"
+    # image_url carries the pre-textured albedo base — materially correct,
+    # unlit, and the reason material identity does not need to survive a
+    # conditioning signal at all. The
+    # change map is a genuine per-pixel strength multiplier (arXiv
+    # 2306.00950), not a reference image, so it does not count against
+    # max_images — it arrives via control_assets={"change_map": id}, read by
+    # fal_gateway's `differential_diffusion` branch, same as depth already
+    # does for the base model.
+    image: differential_diffusion
+    size: image_size
+    num_images: true
+    max_images: 1
+    # Same block as the base model, same key name, so one gateway branch reads
+    # both. This variant only ever sends depth, and it has never sent
+    # easycontrols, so the mutual-exclusivity bug above never reached it.
+    controlnet_union:
+      path: "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro"
+      modes:
+        depth: depth
+
+  fal-ai/flux-2-pro/edit:
+    verified: "2026-08-04"
+    image: image_urls
+    size: image_size           # accepts a {width,height} object or a preset string
+    num_images: false          # endpoint has no num_images field at all
+    # image_urls is an ARRAY with no maximum declared in the schema. The cap
+    # below is ours, not fal's: cost scales with input megapixels here, and
+    # instruction-following degrades long before any API limit.
+    max_images: 6
+    drop: [guidance_scale, num_inference_steps]
+
+  fal-ai/nano-banana-pro/edit:
+    verified: "2026-08-04"
+    image: image_urls
+    size: none                 # uses aspect_ratio + resolution instead
+    num_images: true           # 1-4
+    # Also an unbounded array. This is the multi-reference workhorse: it reads
+    # several images and an instruction that says what each one is for.
+    max_images: 8
+    # Native system_prompt field, up to 50k chars. The prompt scaffolding goes
+    # here rather than being prepended to the user's text.
+    system_prompt: true
+    drop: [guidance_scale, num_inference_steps]
+
+  fal-ai/flux-pro/kontext:
+    verified: "2026-08-04"
+    image: image_url
+    # Schema has NO image_size. It sizes by aspect_ratio (nullable enum), and it
+    # has no num_inference_steps either. The previous `size: image_size` sent a
+    # field this endpoint does not have, which is why the proven engine on the
+    # edit task was failing.
+    size: none
+    num_images: true
+    max_images: 1              # image_url, singular — not an array
+    drop: [num_inference_steps]
+
+  fal-ai/flux-pro/v1/fill:
+    verified: "2026-08-04"
+    image: image_url
+    # mask_url is REQUIRED and must match the source image's dimensions exactly.
+    # Nothing has ever sent it, so every masked repair 422'd. The UI has to
+    # supply a mask before this task can be offered.
+    mask: required
+    size: none                 # no image_size in the schema
+    num_images: true           # 1-4
+    max_images: 1
+    drop: [guidance_scale, num_inference_steps]
+
+  fal-ai/clarity-upscaler:
+    verified: "2026-08-04"
+    image: image_url
+    size: none
+    num_images: false
+    max_images: 1
+    # This one genuinely does take a prompt, and defaults it to
+    # "masterpiece, best quality, highres" when omitted.
+    drop: [guidance_scale]
+
+  fal-ai/seedvr/upscale/image:
+    verified: "2026-08-04"
+    image: image_url
+    size: none
+    num_images: false
+    max_images: 1
+    # No prompt field exists on this endpoint. build_arguments() always sets one,
+    # so it has to be stripped here or the request carries a field the schema
+    # does not declare.
+    drop: [prompt, guidance_scale, num_inference_steps]
+
+  fal-ai/flux-lora:
+    verified: UNVERIFIED
+    image: none
+    size: image_size
+    num_images: true
+
+  bytedance/seedream/v5/pro/edit:
+    verified: "2026-08-04"
+    image: image_urls
+    # Accepts a custom {width,height} as well as presets. Constraint from the
+    # schema: total pixels must be 1,048,576–4,194,304 — every size preset in
+    # the UI satisfies it.
+    size: image_size
+    num_images: true           # 1-6
+    # Schema: "if more than 10 are sent, only the last 10 are used" — a SILENT
+    # truncation on their side. Our cap turns that into a refusal instead.
+    max_images: 10
+    drop: [guidance_scale, num_inference_steps]
+
+# ---------------------------------------------------------------------------
+# Tasks. Each is an explicit user action (a button in the UI), so the common
+# path needs zero inference to pick a model.
+#
+# Routing principle: route by how much the input already shares
+# the output's viewpoint. Inputs already in perspective condition well.
+# Orthographic inputs do not.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Geometry hold: one 0-100 control that maps to conditioning scales.
+# Linear interpolation between neighbouring snaps; applies to the `depth` and
+# `canny` conditioning entries of the chosen route and leaves other entries
+# (e.g. seg) alone. 50 is the scale set shipped before this block existed.
+# `exact` is the depth 0.6 the SKP material jobs ran. Exact needs a real depth
+# map (CAD or estimated); without one the app caps the hold at 50.
+# ---------------------------------------------------------------------------
+geometry_hold:
+  default: 50
+  snaps:
+    loose: { value: 0,   label: "Loose", hint: "Follows the view loosely; proportions may move.", depth: 0.20, canny: 0.10 }
+    hold:  { value: 50,  label: "Hold",  hint: "Holds your drawing with a depth and edge pass.", depth: 0.35, canny: 0.20 }   # today's shipped scales
+    exact: { value: 100, label: "Exact", hint: "Traces the depth as drawn; materials may come back flatter.", depth: 0.60, canny: 0.35 }   # the SKP jobs ran depth 0.6
+
+# ---------------------------------------------------------------------------
+# Intents: the four things an architect asks for, each mapped to a task and an
+# engine. The one screen shows these; the server resolves them, so the browser
+# never names a model. Keys are data. Every task and engine named here must
+# exist in `tasks:` below, and the table refuses to load if one does not.
+#
+#   card            shown as a card on the screen (false = an action on a result)
+#   slider          the geometry hold applies (otherwise a hold is dropped)
+#   needs_mask      the request must carry a painted mask
+#   needs_line      the request must carry a line of words
+#   missing_mask / missing_line   the sentence said when that is absent
+#   max_references  pictures beyond the base; change is the only one with extras
+#   requires        a capability the office must have (cad_materials)
+#   engine          the engine key every view of this intent uses
+#   task            the single task, for intents with no views
+#   views           view kind -> task, for make_real; default_view is shown first
+# ---------------------------------------------------------------------------
+intent_defaults:
+  style: daylight
+  num_images: 4
+  num_images_max: 4
+
+intents:
+  make_real:
+    label: "Make it real"
+    hint: "Turns the view into a render and holds the drawn geometry."
+    card: true
+    slider: true
+    needs_mask: false
+    needs_line: false
+    max_references: 0
+    requires: null
+    engine: proven
+    default_view: model
+    views:
+      model:      { label: "Model view",   task: massing_to_render }
+      sketch:     { label: "Sketch",       task: sketch_to_render }
+      plan:       { label: "Plan",         task: floorplan_prettify }
+      masterplan: { label: "Master plan",  task: masterplan_prettify }
+      elevation:  { label: "Elevation",    task: elevation_section_render }
+      interior:   { label: "Interior",     task: interior_to_render }
+      aerial:     { label: "Aerial",       task: aerial_view_render }
+
+  change:
+    label: "Change something"
+    hint: "Same building, different light, materials or season. The picture stays as drawn."
+    card: true
+    slider: false
+    needs_mask: false
+    needs_line: true
+    max_references: 7
+    requires: null
+    engine: latest
+    task: variation
+    missing_line: "Say what should change."
+    views: {}
+    default_view: null
+
+  region:
+    label: "Change a region"
+    hint: "Mark the part that is wrong and say what it becomes."
+    card: true
+    slider: false
+    needs_mask: true
+    needs_line: true
+    max_references: 0
+    requires: null
+    engine: proven
+    task: inpaint
+    missing_mask: "Mark a region first."
+    missing_line: "Say what the marked part becomes."
+    views: {}
+    default_view: null
+
+  material:
+    label: "Material render (SKP)"
+    hint: "Renders with the materials assigned in SketchUp."
+    card: true
+    slider: true
+    needs_mask: false
+    needs_line: false
+    max_references: 0
+    requires: cad_materials
+    engine: proven
+    task: skp_material_render
+    views: {}
+    default_view: null
+
+  enlarge:
+    label: "Enlarge"
+    hint: "Upscales a finished sheet for presentation."
+    card: false
+    slider: false
+    needs_mask: false
+    needs_line: false
+    max_references: 0
+    requires: null
+    engine: latest
+    task: upscale
+    views: {}
+    default_view: null
+
+# The five looks. `prompt` is a fragment in the house voice and is
+# joined after the task's prompt_scaffold and before the architect's line.
+styles:
+  daylight:
+    label: "Daylight"
+    prompt: "photoreal architectural photograph, clear daylight, soft shadows, true-to-material colours"
+  overcast:
+    label: "Overcast"
+    prompt: "diffuse overcast light, no hard shadows, muted saturation"
+  golden:
+    label: "Golden hour"
+    prompt: "low golden-hour sun, long warm shadows"
+  night:
+    label: "Night"
+    prompt: "dusk, interior lights on, cool sky, warm windows"
+  clay:
+    label: "Clay"
+    prompt: "white clay model, matte white surfaces, soft studio light, no textures"
+
+# The sizes the office offers. The key is "{width}x{height}", made here.
+sizes:
+  - { width: 1280, height: 960,  label: "1280 × 960" }
+  - { width: 1920, height: 1080, label: "1920 × 1080" }
+  - { width: 1024, height: 1024, label: "1024 × 1024" }
+  - { width: 960,  height: 1280, label: "960 × 1280" }
+
+tasks:
+
+  massing_to_render:
+    prompt_scaffold: "A photoreal exterior render of the modelled building, as seen in the view."
+    label: "Massing / SketchUp / Revit view → render"
+    description: >
+      The workhorse. Input is already a perspective 3D view, so depth and edge
+      conditioning hold the designed geometry.
+    enabled: true
+    # The geometry hold slider moves this route's depth and canny scales.
+    geometry_hold: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Hold the geometry"
+        note: >
+          Traces your view with a depth and edge pass, so the building comes
+          back the shape you modelled it. Choose this for anything a client
+          will compare against the drawings.
+        model: fal-ai/flux-general
+        conditioning:
+          # Prefer a TRUE depth pass exported from Revit/SketchUp over an
+          # AI-estimated one. ControlNet's own docs call the true-depth path
+          # explicitly robust.
+          #
+          # 2026-08-27, 1280x960 / 28 steps / guidance 3.5, both conditioning
+          # types now on the union: depth 0.7 + canny 0.4 held the geometry
+          # perfectly but came back untextured white clay — the conditioning
+          # was strong enough to suppress the materials the prompt asked for.
+          # depth 0.35 + canny 0.20 was photoreal, materials applied, and the
+          # geometry still held. These scales were tuned against the much
+          # weaker EasyControl; the union needs roughly half as much to do
+          # more. Perspective→photoreal wants LOW, unlike the orthographic
+          # drawing tasks further down.
+          - type: depth
+            scale: 0.35
+            prefer_supplied: true
+          - type: canny
+            scale: 0.20
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+      latest:
+        label: "Best image quality"
+        note: >
+          FLUX.2, a newer model with markedly better light, materials and
+          reflections. It reads your view as a reference rather than tracing
+          it, so proportions can drift. Best for mood and atmosphere studies.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          # The endpoint defaults to jpeg. Anything a client sees, or that gets
+          # upscaled or edited afterwards, should not start life recompressed.
+          output_format: png
+          guidance_scale: 3.5
+
+  sketch_to_render:
+    prompt_scaffold: "A photoreal render of the sketched building, keeping the drawn massing and openings."
+    label: "Hand sketch → render"
+    description: >
+      Sketches are already in perspective, so scribble/lineart conditioning
+      works. Looser geometry fidelity than massing — expect more drift.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Follow the lines"
+        note: >
+          Conditions on your linework, so the render keeps the composition you
+          drew. Truer to the sketch, plainer as a picture.
+        model: fal-ai/flux-general
+        conditioning:
+          # Was canny, standing in for scribble/lineart. The schema exposes
+          # `hedsketch`, a soft-edge control built for hand-drawn input, which
+          # reads a sketch's intent instead of tracing every stray pencil line.
+          # That preset belongs to EasyControl, which we no longer send, so it
+          # is mapped to the union's canny in the payload spec above — a hand
+          # sketch is linework, and canny of linework is the sketch.
+          #
+          # 2026-08-27, 1280x960: union canny at 0.55 left the output still a
+          # pencil drawing — the model traced the medium as well as the
+          # composition. 0.28 came back photoreal with the composition intact.
+          # The tolerance hedsketch used to provide now comes from the scale.
+          - type: hedsketch
+            scale: 0.28
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+      latest:
+        label: "Best image quality"
+        note: >
+          FLUX.2 interprets the sketch instead of tracing it. Far more
+          convincing as an image, further from exactly what you drew.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          # The endpoint defaults to jpeg. Anything a client sees, or that gets
+          # upscaled or edited afterwards, should not start life recompressed.
+          output_format: png
+          guidance_scale: 3.5
+
+  interior_to_render:
+    prompt_scaffold: "A photoreal render of the interior, as seen in the view, keeping the drawn room and openings."
+    label: "Interior 3D view → render"
+    description: >
+      A furnished, lit interior from a SketchUp/Revit interior view. Interiors
+      carry softer geometry than facades — over-conditioning produces flat,
+      dead rooms, so the scales sit below the massing task's.
+    enabled: true
+    # The geometry hold slider moves this route's depth and canny scales.
+    geometry_hold: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Hold the room"
+        note: >
+          Traces the view with a depth and edge pass so walls, openings and
+          furniture stay where you modelled them. The safe choice when the
+          client has seen the plan.
+        model: fal-ai/flux-general
+        conditioning:
+          # 2026-08-27, 1280x960: depth 0.35 + canny 0.20 on the union came
+          # back photoreal with the ceiling detail and every
+          # window opening still where they were modelled. The old 0.65/0.35
+          # was set for EasyControl's weaker grip and over-constrains the union
+          # — the same clay-model failure the massing task showed. Interiors
+          # end up at the same numbers as massing rather than below them,
+          # because on this transport the softer-geometry argument is already
+          # covered by how low both scales sit.
+          - type: depth
+            scale: 0.35
+            prefer_supplied: true
+          - type: canny
+            scale: 0.20
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+      latest:
+        label: "Best image quality"
+        note: >
+          FLUX.2 reads the view as a reference and relights it beautifully —
+          materials, soft shadows, window light. Furniture may drift or be
+          re-invented. For atmosphere, not sign-off.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          output_format: png
+          guidance_scale: 3.5
+
+  aerial_view_render:
+    prompt_scaffold: "A photoreal bird's-eye render of the modelled site, as seen from above."
+    label: "Aerial massing view → bird's-eye render"
+    description: >
+      A bird's-eye of the scheme from an AERIAL PERSPECTIVE massing view.
+      Legitimate because the input is already perspective — unlike a site
+      plan, which is orthographic and has no honest perspective version.
+    enabled: true
+    # The geometry hold slider moves this route's depth and canny scales.
+    geometry_hold: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Hold the massing"
+        note: >
+          Depth and edge conditioning keep every block the size and shape you
+          modelled. Roofscape, streets and site edges survive scrutiny
+          against the drawings.
+        model: fal-ai/flux-general
+        conditioning:
+          # 2026-08-27: same retune as massing, for the same measured reason —
+          # 0.7/0.45 was tuned against EasyControl and on the union produces an
+          # untextured clay model. A slightly higher canny than massing (0.22
+          # vs 0.20) because an aerial reads block edges and street lines at
+          # small scale, where a little extra edge grip costs nothing.
+          - type: depth
+            scale: 0.35
+            prefer_supplied: true
+          - type: canny
+            scale: 0.22
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+      latest:
+        label: "Best image quality"
+        note: >
+          FLUX.2 makes the more seductive image — light, haze, context — but
+          treats your massing as a suggestion. Block proportions can drift.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          output_format: png
+          guidance_scale: 3.5
+
+  skp_material_render:
+    prompt_scaffold: "A material-accurate render of the modelled building, using the materials assigned in SketchUp."
+    label: "SketchUp materials → material-accurate render"
+    description: >
+      SKP only. Refines the architect's own resolved materials — a
+      pre-textured, unlit albedo pass — instead of describing them in
+      prose. The change map is our own per-surface confidence: held close
+      to what was painted where a material is STATED in the file, handed
+      to the model where it is UNKNOWN. Needs an SKP confirm's albedo,
+      change and depth assets — not available from a plain uploaded image,
+      which is why this is its own task rather than a third engine on
+      massing_to_render.
+    enabled: true
+    experimental: true
+    in_development: true
+    in_development_reason: >
+      Experimental. Fixed but not proven beyond one model and one camera.
+      Set ENABLE_EXPERIMENTAL_TASKS=1 to try it.
+    default_engine: proven
+    engines:
+      proven:
+        label: "Confidence-guided refinement"
+        note: >
+          One pass: depth-conditioned controlnet_unions holds the massing
+          while differential diffusion refines each surface by exactly as
+          much as our own resolution confidence allows. No "latest" engine
+          exists for this — nothing else reads an albedo-plus-confidence-map
+          pair the way this one does.
+        model: fal-ai/flux-general/differential-diffusion
+        conditioning:
+          # 0.35, measured at the app's real 1280x960 output size on
+          # 2026-08-31. The scale was never the problem: three defects
+          # upstream of it made this and every other knob inert, and are
+          # fixed at source -
+          #
+          #   1. the change map was inverted. fal's change_map_image_url is
+          #      BLACK=repaint / WHITE=preserve; the pipeline encoded the
+          #      opposite, so it asked to preserve the whole image and got the
+          #      albedo handed back. Proven with an all-white map (MAE 2.45
+          #      from the input) against an all-black one (MAE 14.77).
+          #   2. the albedo pass double gamma-encoded. sRGB values were passed
+          #      to a linear `baseColorFactor`, lifting mid-tone colours
+          #      toward white - the "washed-out" render was a washed-out
+          #      INPUT.
+          #   3. the depth pass was a ground ramp. On an oblique camera a
+          #      building and the ground beside it are the same distance away,
+          #      so range-scaling cannot separate them; only 18.2% of pixels
+          #      inside the geometry differed from a plain ramp. Now the ground
+          #      plane is fitted in inverse depth and subtracted: 82.0%.
+          #
+          # The earlier note here recommended starting a sweep at 0.3 on the
+          # strength of one sample. That reading was wrong - the 0.6 and 0.3
+          # outputs differed by less than either differed from their own input,
+          # i.e. seed noise. Do not restore it.
+          #
+          # With all three fixed the scale finally does something, and it flips
+          # with resolution: at 640x480 the 0.35 sample drifted and 0.60 held,
+          # but at the real 1280x960 it is 0.60 that drifts while 0.35 holds
+          # the structure. Tune this at 1280x960 or not at all.
+          - type: depth
+            scale: 0.35
+            prefer_supplied: true
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+          # 0.85 confirmed 2026-08-31 as the global denoise budget, now that
+          # the change map gates it per pixel instead of pinning it. Swept
+          # at 640x480: 0.65 under-renders (flat water, no cast shadows),
+          # 0.95 over-renders (invents a hazy sky and blurs fine markings).
+          # The per-surface control belongs in the change map's
+          # confidence tiers (`materials._CHANGE_STRENGTH`); this stays the
+          # global ceiling.
+          strength: 0.85
+
+  variation:
+    prompt_scaffold: "The same building with the change applied and everything else left as it is."
+    label: "Change mood / materials on an existing render"
+    description: >
+      "Same building, warmer, at dusk." Instruction-edit keeps the structure by
+      construction — highest fidelity of any task here.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Kontext"
+        note: >
+          Reliable instruction editing that holds the building steady while the
+          light or the materials change. Cheapest of the two.
+        model: fal-ai/flux-pro/kontext
+        defaults:
+          guidance_scale: 3.5
+      latest:
+        label: "Gemini 3 Pro Image"
+        note: >
+          Reads a written instruction far more literally and leaves the parts
+          you did not mention alone. Around four times the price per image.
+        model: fal-ai/nano-banana-pro/edit
+        defaults:
+          # Without this the endpoint renders at 1K — one megapixel, too small
+          # for anything a client is shown. 2K is the sane presentation default;
+          # 4K is available and costs the same, since this model is priced per
+          # image rather than per megapixel.
+          resolution: "2K"
+          output_format: png
+
+  edit_with_reference:
+    label: "Edit using reference images"
+    description: >
+      Multi-image editing: the render plus the things it should borrow from —
+      a material sample, an approved hero view, a site photo. Attach each
+      image with its role; the prompt refers to them by number.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Gemini 3 Pro Image"
+        note: >
+          Reads up to eight images and follows written instructions about
+          which is which. The strongest instruction-follower here — use it
+          when the brief says "like image 2".
+        model: fal-ai/nano-banana-pro/edit
+        defaults:
+          resolution: "2K"
+          output_format: png
+      latest:
+        label: "FLUX.2 multi-reference"
+        note: >
+          Up to six images, best-in-class light and materials, and exact hex
+          colours when named. Returns one image per render rather than
+          variants.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          output_format: png
+          guidance_scale: 3.5
+
+  floorplan_prettify:
+    prompt_scaffold: "A presentation floor plan: the walls and dimensions stay as drawn, furnished and coloured for issue."
+    label: "Floorplan → presentation floorplan (2D → 2D)"
+    description: >
+      Colouring, furnishing and styling the PLAN ITSELF. Stays orthographic,
+      so this works.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Keep the linework"
+        note: >
+          Holds the walls and dimensions hard, so the plan stays measurable.
+          The safe choice for anything issued.
+        model: fal-ai/flux-general
+        conditioning:
+          # UNCHANGED at 0.75 — only the transport moved (easycontrols →
+          # controlnet_unions, 2026-08-27). Orthographic drawing tasks want the
+          # OPPOSITE of the perspective ones: measured the same day, union
+          # canny at 0.45 drifted and lost the plan, 0.75 held it. There is
+          # nothing photoreal to protect here, so there is no reason to back
+          # off. The same scale on easycontrols hallucinated the drawing away
+          # entirely, which is the fidelity half of why the transport changed.
+          - type: canny
+            scale: 0.75      # high — plan linework must survive
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+      latest:
+        label: "Best image quality"
+        note: >
+          Nicer textures and furniture, looser about the walls. For a board or
+          a competition sheet, not for a plan anyone will scale off.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          # The endpoint defaults to jpeg. Anything a client sees, or that gets
+          # upscaled or edited afterwards, should not start life recompressed.
+          output_format: png
+          guidance_scale: 3.5
+
+  masterplan_prettify:
+    prompt_scaffold: "A presentation master plan: the boundary and building footprints stay as drawn, coloured for issue."
+    label: "Master plan → presentation master plan (2D → 2D)"
+    description: >
+      Colouring, landscaping and styling the SITE PLAN ITSELF. Stays
+      orthographic, so it works — same family as floorplan_prettify. Site
+      plans carry finer linework than floorplans and are read at larger
+      sizes, so this holds the highest edge conditioning in the app.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Keep the linework"
+        note: >
+          Holds plot boundaries, roads and building outlines hard, so the
+          plan stays measurable. The safe choice for anything issued or
+          scaled off.
+        model: fal-ai/flux-general
+        conditioning:
+          # UNCHANGED at 0.82 — transport only (2026-08-27). This is the task
+          # that proved the point: at 0.82 through easycontrols the render was
+          # a near-total hallucination that discarded the drawing, and at the
+          # SAME 0.82 through controlnet_unions it came back with the plot
+          # boundary, north arrow, building outlines and
+          # labels all in their drawn positions.
+          - type: canny
+            scale: 0.82      # highest in the app — site linework must survive
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+      latest:
+        label: "Best image quality"
+        note: >
+          Gemini renders richer landscape texture and reads labels well, and
+          outputs at 2K for board printing. Looser about exact line
+          positions — for boards, not for issue.
+        model: fal-ai/nano-banana-pro/edit
+        defaults:
+          resolution: "2K"
+          output_format: png
+
+  elevation_section_render:
+    prompt_scaffold: "A presentation elevation or section: the lines and levels stay as drawn, rendered for issue."
+    label: "Elevation / section → presentation drawing"
+    description: >
+      Orthographic drawings styled for presentation: materials, shadows, sky,
+      entourage on an elevation or a rendered section. Same 2D → 2D family
+      as the plans, so it works.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Keep the drawing true"
+        note: >
+          High edge conditioning keeps storey heights, openings and the
+          section cut exactly where drawn. Datum lines survive.
+        model: fal-ai/flux-general
+        conditioning:
+          # UNCHANGED at 0.78 — transport only (2026-08-27). Same family as the
+          # two plan tasks: orthographic, nothing photoreal to lose, and the
+          # section cut and datum lines are the whole deliverable.
+          - type: canny
+            scale: 0.78
+        defaults:
+          num_inference_steps: 28
+          guidance_scale: 3.5
+      latest:
+        label: "Best image quality"
+        note: >
+          FLUX.2 gives richer material and sky treatment but redraws rather
+          than traces — proportions can shift. Competition boards, not
+          issued drawings.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          output_format: png
+          guidance_scale: 3.5
+
+  relight:
+    label: "Relight — time of day, weather, season"
+    description: >
+      The cheapest useful iteration there is: same render, different light.
+      Dusk, overcast, winter, golden hour. Structure is preserved by
+      construction because these are edit models.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Kontext"
+        note: >
+          Reliable instruction editing that holds the building steady while
+          the sky, light and season change. Cheapest of the two.
+        model: fal-ai/flux-pro/kontext
+        defaults:
+          guidance_scale: 3.5
+      latest:
+        label: "Gemini 3 Pro Image"
+        note: >
+          Follows a written lighting brief more literally — "low winter sun
+          from the south-west" lands where you said. Around four times the
+          price per image.
+        model: fal-ai/nano-banana-pro/edit
+        defaults:
+          resolution: "2K"
+          output_format: png
+
+  entourage:
+    label: "Add people, planting, vehicles"
+    description: >
+      Populating a finished render. Its own task because the failure mode is
+      specific — wrong human scale — and the prompt scaffolding that prevents
+      it is specific too.
+    enabled: true
+    experimental: true
+    in_development: true
+    in_development_reason: >
+      Experimental. Partial results on the proven engine (people and
+      planting scale drifts). Set ENABLE_EXPERIMENTAL_TASKS=1 to try it.
+    default_engine: proven
+    engines:
+      proven:
+        label: "Gemini 3 Pro Image"
+        note: >
+          The strongest at inserting people and planting at credible scale
+          while leaving the architecture untouched. Attach a reference photo
+          in the entourage role to steer character.
+        model: fal-ai/nano-banana-pro/edit
+        defaults:
+          resolution: "2K"
+          output_format: png
+      latest:
+        label: "FLUX.2"
+        note: >
+          Better image texture overall, slightly freer with the scene around
+          the additions. One image per render rather than variants.
+        model: fal-ai/flux-2-pro/edit
+        defaults:
+          output_format: png
+          guidance_scale: 3.5
+
+  inpaint:
+    # The architect's words go inside the sentence and the look preset stays
+    # out: with "photoreal architectural photograph" appended and the words at
+    # the end, the fill model painted a framed photograph with text inside the
+    # mask (observed 2026-10-10).
+    prompt_scaffold: "Built into this same building, {line}, in the same light and perspective as the walls around it, with the same materials, the same weathering and the same shadows."
+    prompt_style: false
+    label: "Fix or replace part of an image"
+    description: >
+      Standard repair for the recurring failure modes — warped windows, melted
+      railings, nonsense structural elements.
+    enabled: true
+    default_engine: proven
+    engines:
+      proven:
+        label: "Masked repair"
+        note: >
+          You mark the area and it repaints only inside the mark. Exact, and
+          it cannot disturb the rest of the image.
+        model: fal-ai/flux-pro/v1/fill
+        defaults: {}
+      latest:
+        label: "Describe the fix"
+        note: >
+          No mask. Say what is wrong and it finds the spot itself. Quicker to
+          use, less precise about where it stops.
+        model: fal-ai/nano-banana-pro/edit
+        defaults:
+          resolution: "2K"
+          output_format: png
+
+  upscale:
+    prompt_scaffold: "A sharper, larger copy of the image, with the same content and no added detail."
+    label: "Upscale for presentation"
+    enabled: true
+    # `latest` on purpose, and confirmed 2026-08-27: seedvr and clarity both
+    # returned the same 2560x1920 from the same input, at $0.001 against $0.04.
+    # A 40x price difference for an indistinguishable result is not a trade-off
+    # worth offering by default. Clarity stays as `proven` for the cases where
+    # its more aggressive sharpening is actually wanted.
+    default_engine: latest
+    engines:
+      proven:
+        label: "Clarity"
+        note: >
+          The established upscaler. Sharpens confidently, occasionally invents
+          texture that was not there.
+        model: fal-ai/clarity-upscaler
+        defaults: {}
+      latest:
+        label: "SeedVR2"
+        note: >
+          Newer restoration model. Holds thin architectural detail like
+          railings and mullions together better, and costs far less.
+        model: fal-ai/seedvr/upscale/image
+        defaults: {}

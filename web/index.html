@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Light only, and it is a decision rather than an omission: the person
+      using this is judging a render against the SketchUp viewport on their
+      second monitor, and dark chrome shifts its perceived exposure.
+    -->
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#fafbfc" />
+    <meta
+      name="description"
+      content="Render Studio: an AI rendering studio for architects."
+    />
+    <!--
+      Fonts are self-hosted. Self-hosted installs may have no guaranteed route out to
+      fonts.gstatic.com, and a render-blocking third-party request is the wrong
+      dependency for an app that otherwise needs no internet at all. The two
+      faces below carry the first paint; the rest arrive from fonts.css.
+    -->
+    <link
+      rel="preload"
+      href="/fonts/Barlow-400-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/IBMPlexMono-500-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <title>Render Studio</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      This app needs JavaScript. Enable it and reload the page.
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

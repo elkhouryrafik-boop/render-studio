@@ -1,0 +1,21 @@
+services:
+  render-studio:
+    build: .
+    image: render-studio:local
+    container_name: render-studio
+    ports:
+      - "8000:8000"
+    volumes:
+      - render-data:/app/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RENDER_ENGINE: ${RENDER_ENGINE:-fal}
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      DATA_DIR: /app/data
+      DB_PATH: /app/data/render_studio.db
+    restart: unless-stopped
+
+volumes:
+  render-data:
